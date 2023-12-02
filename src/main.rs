@@ -9,7 +9,8 @@ use bevy::{
 };
 use bevy_inspector_egui::quick::WorldInspectorPlugin;
 
-mod mediator;
+mod gameflow;
+mod target_rules;
 mod util;
 
 fn main() {
@@ -31,5 +32,6 @@ fn main() {
         })
         .insert_resource(Msaa::Sample4)
         .add_plugins((util::FpsPlugin, WorldInspectorPlugin::default()))
+        .add_plugins(gameflow::GameFlowPlugin)
         .run();
 }
