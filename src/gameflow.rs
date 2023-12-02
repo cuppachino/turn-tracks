@@ -466,16 +466,26 @@ impl Default for Effect {
     fn default() -> Self {
         Self {
             target: Entity::PLACEHOLDER,
-            ..Default::default()
+            source_stat_effects: vec![],
+            source_status_effects: vec![],
+            target_stat_effects: vec![],
+            target_status_effects: vec![],
         }
     }
 }
 
-pub struct GameFlowApi<'a> {
+pub struct EffectApi<'a> {
     pub ally_targets: &'a mut Vec<Entity>,
     pub rival_targets: &'a mut Vec<Entity>,
     pub ally_non_targets: &'a mut Vec<Entity>,
     pub rival_non_targets: &'a mut Vec<Entity>,
+    pub removed_entities: &'a mut Vec<Entity>,
+}
+
+#[derive(Debug)]
+pub struct PostEffect {
+    pub effect: fn(api: &EffectApi) -> Option<Vec<Effect>>,
+    pub repeat: Option<fn(api: &EffectApi) -> bool>,
 }
 
 #[derive(Debug)]
@@ -484,11 +494,12 @@ pub struct AbilityMeta {
     pub description: String,
     pub target_rule: TargetRule,
     pub cost: Option<Vec<Stat>>,
-    pub effect: fn(api: &GameFlowApi) -> Vec<Effect>,
+    pub effect: fn(api: &EffectApi) -> Option<Vec<Effect>>,
+    pub post_effect: Option<PostEffect>,
 }
 
 impl AbilityMeta {
-    pub fn is_castable(&self, api: &GameFlowApi) -> bool {
+    pub fn is_castable(&self, api: &EffectApi) -> bool {
         todo!()
     }
 }
@@ -581,10 +592,11 @@ fn build_hyomoto_abilities() -> AbilityBundle {
             // todo: {STAT:N} -> multiply N by the stat value and colorize.
             description: "Deal {:power:} to a target and gain {5:focus}.".to_string(),
             cost: None,
-            target_rule: Rule::TargetEnemies {
-                max: Some(1),
-                force_all: false,
-            } + Rule::TargetAlive,
+            target_rule: Rule::TargetAlive
+                + Rule::TargetEnemies {
+                    max: Some(1),
+                    force_all: false,
+                },
 
             effect: |api| {
                 #[cfg(debug_assertions)]
@@ -595,23 +607,27 @@ fn build_hyomoto_abilities() -> AbilityBundle {
 
                 let single_target = *api.rival_targets.first().unwrap();
 
-                // todo: impl world commands for GameFlowApi to get the caster's power, for now assume its 10.
+                // todo: impl world commands for EffectApi to get the caster's power, for now assume its 10.
                 let source_power = 10.0;
 
-                vec![Effect {
+                Some(vec![Effect {
                     target: single_target,
                     target_stat_effects: vec![Stat::Offense(Offensive::Power(source_power))],
                     source_stat_effects: vec![Stat::Focus(5.0)],
                     ..default()
-                }]
+                }])
             },
+            post_effect: None,
         }]),
         lane: LaneAbilities(vec![AbilityMeta {
             name: "Fireball".to_string(),
-            description: "Deal {:arcane:} to an enemy. If {focus} is half full, 50% chance of bouncing to another enemy.".to_string(),
+            description: "Deal {:arcane:} to an enemy. If {focus} is half full, 50% chance of bouncing to another enemy. If the target is killed, guaranteed to bounce to another enemy.".to_string(),
             cost: Some(vec![Stat::Focus(10.0)]),
-
-                target_rule: Rule::TargetEnemies { max: Some(1), force_all: false } + Rule::TargetAlive,
+            target_rule: Rule::TargetAlive
+                + Rule::TargetEnemies {
+                    max: Some(1),
+                    force_all: false,
+                },
             effect: |api| {
                 #[cfg(debug_assertions)]
                 {
@@ -621,34 +637,66 @@ fn build_hyomoto_abilities() -> AbilityBundle {
 
                 let main_target = *api.rival_targets.first().unwrap();
 
-
-                // todo: impl world commands for GameFlowApi to get the caster's `Arcane`. For now just assume its 20.
+                // todo: impl world commands for EffectApi to get the caster's `Arcane`. For now just assume its 20.
                 let source_arcane = 20.0;
 
-                let mut effects = vec![
-                    Effect {
-                        target: main_target,
-                        target_stat_effects: vec![Stat::Offense(Offensive::Arcane(source_arcane))],
-                        ..default()
-                    }
-                ];
+                let mut effects = vec![Effect {
+                    target: main_target,
+                    target_stat_effects: vec![Stat::Offense(Offensive::Arcane(source_arcane))],
+                    ..default()
+                }];
 
-                // todo: impl world commands for GameFlowApi to get the caster's `Focus`. For now just assume its above 50%.
+                // todo: impl world commands for EffectApi to get the caster's `Focus`. For now just assume its above 50%.
                 let above_half_focus = true;
-
                 if above_half_focus {
-                    if let Some(bounce_effect) = api.rival_non_targets.choose(&mut rand::thread_rng()).map(|target| Effect {
-                        target: *target,
-                        target_stat_effects: vec![Stat::Offense(Offensive::Arcane(source_arcane))],
-                        ..default()
-                    }) {
-                        effects.push(bounce_effect);
+                    use rand::*;
+                    let mut rng = rand::thread_rng();
+                    let roll: f32 = rng.gen();
+                    if roll > 0.5 {
+                        println!("Bounce!");
+                        if let Some(bounce_effect) = api
+                            .rival_non_targets
+                            .choose(&mut rand::thread_rng())
+                            .map(|target| Effect {
+                                target: *target,
+                                target_stat_effects: vec![Stat::Offense(Offensive::Arcane(
+                                    source_arcane,
+                                ))],
+                                ..default()
+                            })
+                        {
+                            effects.push(bounce_effect);
+                        }
                     }
                 }
-
-                effects
+                Some(effects)
             },
-
+            // Runs after the effects have been applied.
+            post_effect: Some(PostEffect {
+                effect: |api| {
+                    // The fireball should always bounce to another enemy if the target is killed.
+                    if !api.removed_entities.is_empty() {
+                        if let Some(next_target) = api.rival_non_targets.choose(&mut rand::thread_rng()) {
+                            Some(vec![Effect {
+                                target: *next_target,
+                                target_stat_effects: vec![Stat::Offense(Offensive::Arcane(20.0))],
+                                ..default()
+                            }])
+                        } else {
+                            None
+                        }
+                    } else {
+                        None
+                    }
+                },
+                repeat: Some(|api| {
+                    if api.rival_non_targets.is_empty() {
+                        false
+                    } else {
+                        !api.removed_entities.is_empty()
+                    }
+                }),
+            }),
         }]),
         ultimate: UltimateAbilities(vec![]),
     }

@@ -10,6 +10,7 @@ use bevy::{
 use bevy_inspector_egui::quick::WorldInspectorPlugin;
 
 mod gameflow;
+mod global_random;
 mod target_rules;
 mod util;
 
@@ -32,6 +33,7 @@ fn main() {
         })
         .insert_resource(Msaa::Sample4)
         .add_plugins((util::FpsPlugin, WorldInspectorPlugin::default()))
+        .add_plugins(global_random::GlobalRandomPlugin)
         .add_plugins(gameflow::GameFlowPlugin)
         .run();
 }
